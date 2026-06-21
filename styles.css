@@ -30,6 +30,11 @@ h1.title{font-family:'Spectral',serif;font-weight:700;font-size:clamp(26px,4.4vw
   line-height:1.05;margin:6px 0 0;letter-spacing:-.01em;color:#FFF}
 .title .em{color:var(--gold)}
 .hero-sub{color:#B7C5D8;max-width:64ch;margin:10px 0 0;font-size:14.5px}
+.pagenav{margin-top:16px;display:flex;gap:10px;flex-wrap:wrap}
+.pagenav a{display:inline-flex;align-items:center;gap:7px;font-size:13px;font-weight:600;
+  color:#EAF0F7;border:1.5px solid rgba(255,255,255,.25);border-radius:999px;padding:7px 15px;
+  background:rgba(255,255,255,.06);transition:background .15s,border-color .15s}
+.pagenav a:hover{background:rgba(255,255,255,.14);border-color:var(--gold);text-decoration:none}
 .counter{margin-top:22px;display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;
   padding-top:18px;border-top:1px solid rgba(255,255,255,.10)}
 .counter .big{font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:clamp(30px,6vw,54px);
