@@ -214,7 +214,7 @@
     <div class="grid">
       <div class="fld">
         <label for="f_nitEnt">Nit Entidad Contratante</label>
-        <div class="ctrl"><input id="f_nitEnt" type="text" placeholder="Todas" autocomplete="off"/><span class="typed"></span></div>
+        <div class="ctrl"><input id="f_nitEnt" type="text" inputmode="numeric" placeholder="Todas" autocomplete="off"/><span class="typed"></span></div>
       </div>
       <div class="fld">
         <label for="f_nomEnt">Nombre Entidad Contratante</label>
@@ -235,7 +235,7 @@
 
       <div class="fld">
         <label for="f_nitProv">Nit Proveedor</label>
-        <div class="ctrl"><input id="f_nitProv" type="text" placeholder="Todas" autocomplete="off"/><span class="typed"></span></div>
+        <div class="ctrl"><input id="f_nitProv" type="text" inputmode="numeric" placeholder="Todas" autocomplete="off"/><span class="typed"></span></div>
       </div>
       <div class="fld">
         <label for="f_nomProv">Nombre_proveedor</label>
@@ -243,7 +243,7 @@
       </div>
       <div class="fld">
         <label for="f_nitRep">Nit Rep Legal</label>
-        <div class="ctrl"><input id="f_nitRep" type="text" placeholder="Todas" autocomplete="off"/><span class="typed"></span></div>
+        <div class="ctrl"><input id="f_nitRep" type="text" inputmode="numeric" placeholder="Todas" autocomplete="off"/><span class="typed"></span></div>
       </div>
       <div class="fld">
         <label for="f_mod">Modalidad de Contratación</label>
@@ -648,6 +648,14 @@
     if(F) runQuery(readForm());
   });
   $("btnXlsx").addEventListener("click", downloadExcel);
+
+  /* campos de NIT: solo dígitos (escritura y pegado) */
+  ["f_nitEnt","f_nitProv","f_nitRep"].forEach(function(id){
+    $(id).addEventListener("input", function(){
+      var clean=this.value.replace(/\D+/g,"");
+      if(this.value!==clean) this.value=clean;
+    });
+  });
 
   /* ===== arranque ===== */
   (function boot(){
