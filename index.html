@@ -10,6 +10,9 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Spectral:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
 
+<!-- SheetJS: generar .xlsx en el navegador (si no carga, se usa CSV como respaldo) -->
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
 <style>
   :root{
     --ink:#0A1A2F; --ink-2:#102542; --ink-3:#16314f;
@@ -92,7 +95,12 @@
   .rcount{font-family:'Spectral',serif;font-size:19px;font-weight:600;color:var(--ink)}
   .rcount span{color:var(--gold)}
   .rsub{font-size:13px;color:var(--muted);margin-top:2px}
-  .sortwrap{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--muted)}
+  .sortwrap{display:flex;align-items:center;gap:14px;font-size:12.5px;color:var(--muted);flex-wrap:wrap}
+  .btn-xlsx{display:inline-flex;align-items:center;gap:7px;height:38px;padding:0 14px;
+    border:1.5px solid var(--line-2);border-radius:8px;background:var(--paper);
+    color:var(--ink);font-family:inherit;font-size:13px;font-weight:600;cursor:pointer}
+  .btn-xlsx:hover:not(:disabled){border-color:var(--ok);color:var(--ok)}
+  .btn-xlsx:disabled{opacity:.55;cursor:default}
   .sortwrap select{height:38px;border:1.5px solid var(--line-2);border-radius:8px;padding:0 10px;
     font-family:inherit;font-size:13px;background:var(--paper);color:var(--text)}
   .sortwrap select:focus{outline:none;border-color:var(--teal);box-shadow:0 0 0 3px var(--teal-soft)}
@@ -263,6 +271,10 @@
   </div>
   <div class="sortwrap">
     <span>Ordenado por: <b>Fecha de firma · reciente</b></span>
+    <button type="button" class="btn-xlsx" id="btnXlsx" disabled>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
+      Descargar Excel
+    </button>
   </div>
 </div>
 
@@ -270,7 +282,7 @@
 
 <footer>
   <div class="foot">
-    <span>Fuente: <a href="https://www.datos.gov.co/Gastos-Gubernamentales/SECOP-II-Contratos-Electr-nicos/jbjy-vk9h" target="_blank" rel="noopener noreferrer">SECOP&nbsp;II — Contratos Electrónicos</a> · API OData v4 de datos.gov.co</span>
+    <span>Fuente: <a href="https://www.datos.gov.co/Gastos-Gubernamentales/SECOP-II-Contratos-Electr-nicos/jbjy-vk9h" target="_blank" rel="noopener noreferrer">SECOP&nbsp;II — Contratos Electrónicos</a> · API SODA de datos.gov.co</span>
     <span>Los enlaces «Ver proceso» abren la ficha pública en community.secop.gov.co</span>
   </div>
 </footer>
@@ -338,7 +350,7 @@
 
   /* ===== estado ===== */
   var F=null, active=null, rows=[], count=null, page=0,
-      loading=false, more=false, done=false, error=null, reqId=0;
+      loading=false, more=false, done=false, error=null, reqId=0, xlsBusy=false;
   var $=function(id){ return document.getElementById(id); };
   var list=$("list"), rcount=$("rcount"), rsub=$("rsub");
 
@@ -406,6 +418,89 @@
     return WHERE_OPTS.reduce(function(promise, opts, i){
       return i===0 ? attempt(opts) : promise.catch(function(){ return attempt(opts); });
     }, null);
+  }
+
+  /* ===== descarga a Excel ===== */
+  var XLS_CAP=5000, XLS_BATCH=1000;   /* tope de filas y tamaño de lote */
+  var XLS_COLS=[
+    ["entidad","Entidad"], ["nitEntidad","NIT entidad"],
+    ["proveedor","Proveedor"], ["docProveedor","Documento proveedor"],
+    ["objeto","Objeto del contrato"], ["referencia","Referencia"],
+    ["modalidad","Modalidad"], ["valor","Valor del contrato"],
+    ["fechaFirma","Fecha de firma"], ["departamento","Departamento"],
+    ["ciudad","Ciudad"], ["estado","Estado"],
+    ["repLegal","Representante legal"], ["repLegalId","Doc. rep. legal"],
+    ["url","URL del proceso"]
+  ];
+  /* trae solo datos (sin conteo) en lotes grandes, con la misma lógica de respaldo */
+  function fetchRows(a, offset, limit){
+    var ord=orderBy();
+    function attempt(opts){
+      var w=buildWhere(a,opts);
+      var url=API+"?$limit="+limit+"&$offset="+offset;
+      if(w) url+="&$where="+encodeURIComponent(w);
+      if(ord) url+="&$order="+encodeURIComponent(ord);
+      return fetch(url).then(function(r){ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); });
+    }
+    return WHERE_OPTS.reduce(function(promise, opts, i){
+      return i===0 ? attempt(opts) : promise.catch(function(){ return attempt(opts); });
+    }, null);
+  }
+  function buildRecords(allRows){
+    return allRows.map(function(row){
+      var rec={};
+      XLS_COLS.forEach(function(c){
+        var v=val(row, F[c[0]]);
+        if(c[0]==="valor"){ var n=(v!=null&&v!=="")?Number(v):null; rec[c[1]]=(n!=null&&!isNaN(n))?n:(v||""); }
+        else if(c[0]==="fechaFirma"){ rec[c[1]]=v?String(v).slice(0,10):""; }
+        else rec[c[1]]=(v==null)?"":v;
+      });
+      return rec;
+    });
+  }
+  function triggerDownload(blob, fname){
+    var url=URL.createObjectURL(blob), el=document.createElement("a");
+    el.href=url; el.download=fname; document.body.appendChild(el); el.click();
+    document.body.removeChild(el); setTimeout(function(){ URL.revokeObjectURL(url); }, 1500);
+  }
+  function exportRecords(records, base){
+    if(window.XLSX){
+      var ws=XLSX.utils.json_to_sheet(records);
+      var wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Contratos");
+      XLSX.writeFile(wb, base+".xlsx");
+    } else {
+      var headers=Object.keys(records[0]);
+      function cell(v){ return '"'+String(v==null?"":v).replace(/"/g,'""')+'"'; }
+      var lines=[headers.map(cell).join(",")];
+      records.forEach(function(r){ lines.push(headers.map(function(h){ return cell(r[h]); }).join(",")); });
+      triggerDownload(new Blob(["﻿"+lines.join("\r\n")], {type:"text/csv;charset=utf-8;"}), base+".csv");
+    }
+  }
+  function setXlsBusy(on){
+    var b=$("btnXlsx"); if(!b) return;
+    b.disabled = on || !F;
+    b.lastChild.textContent = on? " Generando…" : " Descargar Excel";
+  }
+  function downloadExcel(){
+    if(!F || xlsBusy) return;
+    var a=active||readForm();
+    xlsBusy=true; setXlsBusy(true);
+    var all=[];
+    function loop(offset){
+      var lim=Math.min(XLS_BATCH, XLS_CAP-all.length);
+      if(lim<=0) return Promise.resolve();
+      return fetchRows(a, offset, lim).then(function(arr){
+        arr=arr||[]; all=all.concat(arr);
+        if(arr.length<lim || all.length>=XLS_CAP) return;
+        return loop(offset+arr.length);
+      });
+    }
+    loop(0).then(function(){
+      if(!all.length){ alert("No hay contratos para descargar con los filtros actuales."); return; }
+      exportRecords(buildRecords(all), "contratos-secop-ii-"+new Date().toISOString().slice(0,10));
+    }).catch(function(e){
+      alert("No se pudo generar el archivo: "+((e&&e.message)||"error de red"));
+    }).then(function(){ xlsBusy=false; setXlsBusy(false); });
   }
 
   /* ===== render ===== */
@@ -541,6 +636,7 @@
     INPUT_IDS.forEach(function(id){ $(id).value=""; });
     if(F) runQuery(readForm());
   });
+  $("btnXlsx").addEventListener("click", downloadExcel);
 
   /* ===== arranque ===== */
   (function boot(){
@@ -548,7 +644,7 @@
     .then(function(j){
       var sample=(j&&j[0])||{}; var keys=Object.keys(sample); F={};
       for(var k in FIELD_CANDIDATES) F[k]=pick(keys,FIELD_CANDIDATES[k]);
-      setBtnLoading(false);
+      setBtnLoading(false); setXlsBusy(false);
       fetch(API+"?$select="+encodeURIComponent("count(1) as cnt")).then(function(x){ return x.ok?x.json():null; })
         .then(function(d){ if(d && d[0] && d[0].cnt!=null) $("total").textContent=NUM.format(Number(d[0].cnt)); })
         .catch(function(){});
