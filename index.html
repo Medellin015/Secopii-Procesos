@@ -285,7 +285,10 @@
 "use strict";
 (function(){
   /* ===== configuración ===== */
-  var ODATA = "https://www.datos.gov.co/api/odata/v4/jbjy-vk9h";
+  /* API SODA de Socrata (datos.gov.co): soporta CORS desde el navegador.
+     El endpoint OData v4 (/api/odata/v4/...) no envía cabeceras CORS y
+     provoca "Failed to fetch" al consultarlo desde una página web. */
+  var API = "https://www.datos.gov.co/resource/jbjy-vk9h.json";
   var PAGE = 20;
 
   /* candidatos por campo lógico (se resuelven contra una fila de muestra) */
@@ -353,13 +356,13 @@
   })();
 
   /* ===== consultas OData ===== */
-  function buildFilter(a, lower){
+  function buildWhere(a, lower){
     if(!F) return "";
     var p=[];
     function txt(field, value){
       if(!value || !field) return;
       var v=esc(lower? value.toLowerCase() : value);
-      p.push(lower? "contains(tolower("+field+"),'"+v+"')" : "contains("+field+",'"+v+"')");
+      p.push(lower? "lower("+field+") like '%"+v+"%'" : field+" like '%"+v+"%'");
     }
     txt(F.nitEntidad,   a.nitEnt);
     txt(F.entidad,      a.nomEnt);
@@ -369,9 +372,9 @@
     txt(F.docProveedor, a.nitProv);
     txt(F.proveedor,    a.nomProv);
     txt(F.repLegalId,   a.nitRep);
-    if(a.mod && F.modalidad) p.push(F.modalidad+" eq '"+esc(a.mod)+"'");
+    if(a.mod && F.modalidad) p.push(F.modalidad+" = '"+esc(a.mod)+"'");
     if(a.anio && F.fechaFirma){ var yy=parseInt(a.anio,10);
-      p.push(F.fechaFirma+" ge "+yy+"-01-01T00:00:00 and "+F.fechaFirma+" lt "+(yy+1)+"-01-01T00:00:00"); }
+      p.push(F.fechaFirma+" >= '"+yy+"-01-01T00:00:00' and "+F.fechaFirma+" < '"+(yy+1)+"-01-01T00:00:00'"); }
     return p.join(" and ");
   }
   function orderBy(s){
@@ -382,14 +385,21 @@
     return "";
   }
   function fetchPage(a, idx, withCount){
-    var skip=idx*PAGE, ord=orderBy(a.sort);
+    var off=idx*PAGE, ord=orderBy(a.sort);
     function attempt(lower){
-      var f=buildFilter(a,lower);
-      var url=ODATA+"?$top="+PAGE+"&$skip="+skip;
-      if(f) url+="&$filter="+encodeURIComponent(f);
-      if(ord) url+="&$orderby="+encodeURIComponent(ord);
-      if(withCount) url+="&$count=true";
-      return fetch(url).then(function(r){ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); });
+      var w=buildWhere(a,lower);
+      var dataUrl=API+"?$limit="+PAGE+"&$offset="+off;
+      if(w) dataUrl+="&$where="+encodeURIComponent(w);
+      if(ord) dataUrl+="&$order="+encodeURIComponent(ord);
+      var pData=fetch(dataUrl).then(function(r){ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); });
+      if(!withCount) return pData.then(function(arr){ return {value:arr}; });
+      var cntUrl=API+"?$select="+encodeURIComponent("count(1) as cnt")+(w? "&$where="+encodeURIComponent(w):"");
+      var pCount=fetch(cntUrl).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; });
+      return Promise.all([pData,pCount]).then(function(res){
+        var out={value:res[0]};
+        if(res[1] && res[1][0] && res[1][0].cnt!=null) out["@odata.count"]=Number(res[1][0].cnt);
+        return out;
+      });
     }
     return attempt(true).catch(function(){ return attempt(false); });
   }
@@ -531,13 +541,13 @@
 
   /* ===== arranque ===== */
   (function boot(){
-    fetch(ODATA+"?$top=1").then(function(r){ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); })
+    fetch(API+"?$limit=1").then(function(r){ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); })
     .then(function(j){
-      var sample=(j.value&&j.value[0])||{}; var keys=Object.keys(sample); F={};
+      var sample=(j&&j[0])||{}; var keys=Object.keys(sample); F={};
       for(var k in FIELD_CANDIDATES) F[k]=pick(keys,FIELD_CANDIDATES[k]);
       setBtnLoading(false);
-      fetch(ODATA+"?$top=0&$count=true").then(function(x){ return x.ok?x.json():null; })
-        .then(function(d){ if(d && d["@odata.count"]!=null) $("total").textContent=NUM.format(d["@odata.count"]); })
+      fetch(API+"?$select="+encodeURIComponent("count(1) as cnt")).then(function(x){ return x.ok?x.json():null; })
+        .then(function(d){ if(d && d[0] && d[0].cnt!=null) $("total").textContent=NUM.format(Number(d[0].cnt)); })
         .catch(function(){});
       runQuery(readForm());
     })
