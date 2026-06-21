@@ -1,0 +1,404 @@
+"use strict";
+(function(){
+  /* ===== configuración ===== */
+  /* API SODA de Socrata (datos.gov.co): soporta CORS desde el navegador.
+     Dataset: SECOP II - Procesos de Contratación (p6dx-8zbt).
+     Para usar el otro dataset, cambia el id por: 77td-mmia */
+  var API = "https://www.datos.gov.co/resource/p6dx-8zbt.json";
+  var PAGE = 20;
+
+  /* documentos de proveedor restringidos (igual que en Contratos) */
+  var BLOCKED_DOCS = ["1128272022"];
+
+  /* candidatos por campo lógico (se resuelven contra una fila de muestra) */
+  var FIELD_CANDIDATES = {
+    nomEnt:      ["nombre_entidad","nombre_entidad_contratante","nombre_de_la_entidad"],
+    entidad:     ["entidad","nombre_de_la_entidad"],
+    desc:        ["descripci_n_del_procedimiento","descripcion_del_procedimiento","descripcion_del_proceso","descripci_n_del_proceso"],
+    referencia:  ["referencia_del_proceso","referencia_del_proces","referencia_del_contrato","referencia"],
+    nitProv:     ["nit_del_proveedor_adjudicado","nit_del_proveedor","documento_proveedor","nit_proveedor"],
+    nomProv:     ["nombre_del_proveedor","nombre_proveedor","proveedor_adjudicado","proveedor"],
+    valor:       ["valor_total_adjudicacion","valor_total_adjudicaci_n","valor_adjudicacion","precio_base","valor_del_contrato"],
+    modalidad:   ["modalidad_de_contratacion","modalidad_de_contrataci_n","modalidad"],
+    objeto:      ["objeto_del_contrato","objeto_a_contratar","nombre_del_procedimiento","objeto"],
+    fecha:       ["fecha_de_publicacion_del","fecha_de_publicacion_del_proceso","fecha_de_publicacion_fase_3","fecha_de_recepcion_de_ofertas","fecha_de_ultima_publicaci","fecha_de_publicacion"],
+    estado:      ["estado_del_procedimiento","fase","estado_de_apertura_del_proceso","estado"],
+    url:         ["urlproceso","url_del_proceso","url_proceso","url"],
+    departamento:["departamento_entidad","departamento","dpto"],
+    ciudad:      ["ciudad_entidad","ciudad","municipio"]
+  };
+
+  function modTheme(m){
+    var s=(m||"").toLowerCase();
+    if(s.indexOf("directa")>=0) return ["#0E6E78","#E2F0F1","#0A555D"];
+    if(s.indexOf("mínima")>=0||s.indexOf("minima")>=0) return ["#B98A28","#F3E8CE","#7A5C16"];
+    if(s.indexOf("licitaci")>=0) return ["#3457A6","#E4EAF7","#243f78"];
+    if(s.indexOf("abreviada")>=0) return ["#7A4FB0","#EEE6F6","#553584"];
+    if(s.indexOf("méritos")>=0||s.indexOf("meritos")>=0) return ["#1E7A5A","#DDF0E7","#125640"];
+    if(s.indexOf("especial")>=0) return ["#B4452F","#F6E1DB","#822f1f"];
+    return ["#16314f","#E7ECF3","#0A1A2F"];
+  }
+
+  var COP=new Intl.NumberFormat("es-CO",{style:"currency",currency:"COP",maximumFractionDigits:0});
+  var NUM=new Intl.NumberFormat("es-CO");
+
+  function esc(s){ return String(s).replace(/'/g,"''"); }
+  function escHtml(s){ return String(s==null?"":s)
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;"); }
+  function pick(keys,cands){ var low={}; keys.forEach(function(k){ low[k.toLowerCase()]=k; });
+    for(var i=0;i<cands.length;i++){ var c=cands[i].toLowerCase(); if(low[c]) return low[c]; } return null; }
+  function val(row,key){ if(!key) return undefined; var v=row[key];
+    if(v&&typeof v==="object") return v.url||v.description||v.label||undefined; return v; }
+  function fmtFecha(v){ if(!v) return null; var d=new Date(v); if(isNaN(d)) return String(v).slice(0,10);
+    return d.toLocaleDateString("es-CO",{year:"numeric",month:"short",day:"2-digit"}); }
+  function getYear(v){ if(!v) return null; var d=new Date(v); return isNaN(d)?null:d.getFullYear(); }
+
+  /* ===== estado ===== */
+  var F=null, active=null, rows=[], count=null, page=0,
+      loading=false, more=false, done=false, error=null, reqId=0, xlsBusy=false;
+  var $=function(id){ return document.getElementById(id); };
+  var list=$("list"), rcount=$("rcount"), rsub=$("rsub");
+
+  /* poblar el desplegable de años */
+  (function(){
+    var y=$("f_anio"), now=new Date().getFullYear();
+    for(var yr=now; yr>=2015; yr--){ var o=document.createElement("option"); o.value=yr;o.textContent=yr;y.appendChild(o); }
+  })();
+
+  /* ===== consultas SODA (SoQL) ===== */
+  function buildWhere(a, opts){
+    if(!F) return "";
+    var p=[];
+    function txt(field, value){          /* campos de texto libre: contiene */
+      if(!value || !field) return;
+      var v=esc(opts.lower? value.toLowerCase() : value);
+      p.push(opts.lower? "lower("+field+") like '%"+v+"%'" : field+" like '%"+v+"%'");
+    }
+    function id(field, value){            /* identificadores: coincidencia exacta */
+      if(!value || !field) return;
+      var raw=String(value).trim();
+      if(opts.idNumeric && /^[0-9]+$/.test(raw)) p.push(field+" = "+raw);
+      else p.push(field+" = '"+esc(raw)+"'");
+    }
+    function gte(field, value){           /* valor mínimo */
+      if(!value || !field) return;
+      var raw=String(value).trim();
+      if(!/^[0-9]+$/.test(raw)) return;
+      if(opts.idNumeric) p.push(field+" >= "+raw);
+      else p.push(field+" >= '"+raw+"'");
+    }
+    txt(F.nomEnt,     a.nomEnt);
+    txt(F.entidad,    a.entidad);
+    txt(F.desc,       a.desc);
+    txt(F.referencia, a.ref);
+    id(F.nitProv,     a.nitProv);
+    txt(F.nomProv,    a.nomProv);
+    gte(F.valor,      a.valorMin);
+    txt(F.modalidad,  a.mod);
+    txt(F.objeto,     a.objeto);
+    if(a.anio && F.fecha){ var yy=parseInt(a.anio,10);
+      p.push(F.fecha+" >= '"+yy+"-01-01T00:00:00' and "+F.fecha+" < '"+(yy+1)+"-01-01T00:00:00'"); }
+    if(F.nitProv){                       /* excluir proveedores restringidos */
+      BLOCKED_DOCS.forEach(function(doc){
+        if(opts.idNumeric && /^[0-9]+$/.test(doc)) p.push(F.nitProv+" != "+doc);
+        else p.push(F.nitProv+" != '"+esc(doc)+"'");
+      });
+    }
+    return p.join(" and ");
+  }
+  /* orden: por fecha (más reciente primero) y los procesos sin fecha al final */
+  function orderCandidates(){
+    if(!(F && F.fecha)) return [""];
+    var f=F.fecha;
+    return ["coalesce("+f+",'1111-01-01T00:00:00') desc", f+" desc"];
+  }
+  var WHERE_OPTS=[{lower:true,idNumeric:true},{lower:true,idNumeric:false},{lower:false,idNumeric:false}];
+  function buildStrategies(){
+    var s=[]; orderCandidates().forEach(function(ord){
+      WHERE_OPTS.forEach(function(opts){ s.push({ord:ord, opts:opts}); });
+    }); return s;
+  }
+  function tryStrategies(attempt){
+    return buildStrategies().reduce(function(promise, st, i){
+      return i===0 ? attempt(st) : promise.catch(function(){ return attempt(st); });
+    }, null);
+  }
+  function fetchPage(a, idx, withCount){
+    var off=idx*PAGE;
+    function attempt(st){
+      var w=buildWhere(a,st.opts);
+      var dataUrl=API+"?$limit="+PAGE+"&$offset="+off;
+      if(w) dataUrl+="&$where="+encodeURIComponent(w);
+      if(st.ord) dataUrl+="&$order="+encodeURIComponent(st.ord);
+      var pData=fetch(dataUrl).then(function(r){ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); });
+      if(!withCount) return pData.then(function(arr){ return {value:arr}; });
+      var cntUrl=API+"?$select="+encodeURIComponent("count(1) as cnt")+(w? "&$where="+encodeURIComponent(w):"");
+      var pCount=fetch(cntUrl).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; });
+      return Promise.all([pData,pCount]).then(function(res){
+        var out={value:res[0]};
+        if(res[1] && res[1][0] && res[1][0].cnt!=null) out["@odata.count"]=Number(res[1][0].cnt);
+        return out;
+      });
+    }
+    return tryStrategies(attempt);
+  }
+
+  /* ===== descarga a Excel ===== */
+  var XLS_CAP=5000, XLS_BATCH=1000;
+  var XLS_COLS=[
+    ["nomEnt","Nombre entidad"], ["entidad","Entidad"],
+    ["objeto","Objeto"], ["desc","Descripción del procedimiento"],
+    ["referencia","Referencia del proceso"], ["modalidad","Modalidad"],
+    ["nomProv","Proveedor adjudicado"], ["nitProv","NIT proveedor"],
+    ["valor","Valor total adjudicado"], ["fecha","Fecha"],
+    ["estado","Estado"], ["departamento","Departamento"],
+    ["ciudad","Ciudad"], ["url","URL del proceso"]
+  ];
+  function fetchRows(a, offset, limit){
+    function attempt(st){
+      var w=buildWhere(a,st.opts);
+      var url=API+"?$limit="+limit+"&$offset="+offset;
+      if(w) url+="&$where="+encodeURIComponent(w);
+      if(st.ord) url+="&$order="+encodeURIComponent(st.ord);
+      return fetch(url).then(function(r){ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); });
+    }
+    return tryStrategies(attempt);
+  }
+  function buildRecords(allRows){
+    return allRows.map(function(row){
+      var rec={};
+      XLS_COLS.forEach(function(c){
+        var v=val(row, F[c[0]]);
+        if(c[0]==="valor"){ var n=(v!=null&&v!=="")?Number(v):null; rec[c[1]]=(n!=null&&!isNaN(n))?n:(v||""); }
+        else if(c[0]==="fecha"){ rec[c[1]]=v?String(v).slice(0,10):""; }
+        else rec[c[1]]=(v==null)?"":v;
+      });
+      return rec;
+    });
+  }
+  function triggerDownload(blob, fname){
+    var url=URL.createObjectURL(blob), el=document.createElement("a");
+    el.href=url; el.download=fname; document.body.appendChild(el); el.click();
+    document.body.removeChild(el); setTimeout(function(){ URL.revokeObjectURL(url); }, 1500);
+  }
+  function exportRecords(records, base){
+    if(window.XLSX){
+      var ws=XLSX.utils.json_to_sheet(records);
+      var wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Procesos");
+      XLSX.writeFile(wb, base+".xlsx");
+    } else {
+      var headers=Object.keys(records[0]);
+      function cell(v){ return '"'+String(v==null?"":v).replace(/"/g,'""')+'"'; }
+      var lines=[headers.map(cell).join(",")];
+      records.forEach(function(r){ lines.push(headers.map(function(h){ return cell(r[h]); }).join(",")); });
+      triggerDownload(new Blob(["﻿"+lines.join("\r\n")], {type:"text/csv;charset=utf-8;"}), base+".csv");
+    }
+  }
+  function setXlsBusy(on){
+    var b=$("btnXlsx"); if(!b) return;
+    b.disabled = on || !F;
+    b.lastChild.textContent = on? " Generando…" : " Descargar Excel";
+  }
+  function downloadExcel(){
+    if(!F || xlsBusy) return;
+    var a=active||readForm();
+    if(isBlocked(a)){ showBlocked(); return; }
+    xlsBusy=true; setXlsBusy(true);
+    var all=[];
+    function loop(offset){
+      var lim=Math.min(XLS_BATCH, XLS_CAP-all.length);
+      if(lim<=0) return Promise.resolve();
+      return fetchRows(a, offset, lim).then(function(arr){
+        arr=arr||[]; all=all.concat(arr);
+        if(arr.length<lim || all.length>=XLS_CAP) return;
+        return loop(offset+arr.length);
+      });
+    }
+    loop(0).then(function(){
+      if(!all.length){ alert("No hay procesos para descargar con los filtros actuales."); return; }
+      exportRecords(buildRecords(all), "procesos-secop-ii-"+new Date().toISOString().slice(0,10));
+    }).catch(function(e){
+      alert("No se pudo generar el archivo: "+((e&&e.message)||"error de red"));
+    }).then(function(){ xlsBusy=false; setXlsBusy(false); });
+  }
+
+  /* ===== render ===== */
+  function setBtnLoading(on){
+    $("btnIcon").innerHTML = on
+      ? '<span class="spin"></span>'
+      : '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>';
+    $("btnSearch").disabled = on || !F;
+  }
+
+  function cardHtml(row){
+    var ent=val(row,F.nomEnt)||val(row,F.entidad), prov=val(row,F.nomProv),
+        docP=val(row,F.nitProv), obj=val(row,F.objeto)||val(row,F.desc),
+        ref=val(row,F.referencia), mod=val(row,F.modalidad), valor=val(row,F.valor),
+        fecha=val(row,F.fecha), url=val(row,F.url), depto=val(row,F.departamento),
+        ciudad=val(row,F.ciudad), estado=val(row,F.estado);
+
+    var th=modTheme(mod), accent=th[0], soft=th[1], aink=th[2];
+    var year=getYear(fecha);
+    var valNum=(valor!=null && valor!=="")? Number(valor):null;
+    var loc=[ciudad,depto].filter(Boolean).join(", ");
+
+    var meta="";
+    if(loc)  meta+='<span>'+escHtml(loc)+'</span>';
+    if(ref)  meta+='<span><span class="k">Ref.</span> '+escHtml(ref)+'</span>';
+
+    var chips="";
+    if(mod)    chips+='<span class="chip mod">'+escHtml(mod)+'</span>';
+    if(estado) chips+='<span class="chip">'+escHtml(estado)+'</span>';
+    if(fecha)  chips+='<span class="chip">'+escHtml(fmtFecha(fecha))+'</span>';
+
+    var provHtml="";
+    if(prov){ provHtml='<div class="prov"><span class="plabel">Proveedor adjudicado</span>'+
+      '<span class="who">'+escHtml(prov)+'</span>'+(docP? '<span class="nit">· '+escHtml(docP)+'</span>':'')+'</div>'; }
+
+    var safeUrl=(url && /^https?:\/\//i.test(url))? url : null;
+    var verproc = safeUrl
+      ? '<a class="verproc" href="'+escHtml(safeUrl)+'" target="_blank" rel="noopener noreferrer">Ver proceso '+
+        '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 17 17 7M9 7h8v8"/></svg></a>'
+      : '<span class="verproc disabled">Sin enlace</span>';
+
+    return ''+
+    '<article class="card" style="--accent:'+accent+';--accent-soft:'+soft+';--accent-ink:'+aink+'">'+
+      '<div class="card-grid">'+
+        '<div class="card-main">'+
+          '<h2 class="ent">'+escHtml(ent||"Entidad no registrada")+'</h2>'+
+          (meta? '<div class="meta-line">'+meta+'</div>':'')+
+          (obj? '<p class="objeto">'+escHtml(obj)+'</p>':'')+
+          provHtml+
+          (chips? '<div class="chips">'+chips+'</div>':'')+
+        '</div>'+
+        '<div class="card-side">'+
+          '<div>'+
+            '<div class="valor-lbl">Valor total adjudicado</div>'+
+            '<div class="valor">'+((valNum!=null && !isNaN(valNum))? COP.format(valNum):'—')+'</div>'+
+            (year? '<div class="anio">Año · <b>'+year+'</b></div>':'')+
+          '</div>'+ verproc+
+        '</div>'+
+      '</div>'+
+    '</article>';
+  }
+
+  function render(){
+    if(loading){ rcount.innerHTML="Buscando…"; }
+    else if(count!=null){ rcount.innerHTML='<span>'+NUM.format(count)+'</span> proceso'+(count===1?'':'s')+' encontrado'+(count===1?'':'s'); }
+    else { rcount.textContent=rows.length+" resultado"+(rows.length===1?'':'s'); }
+    var hasF = active && (active.nomEnt||active.entidad||active.desc||active.ref||active.nitProv||active.nomProv||active.valorMin||active.mod||active.objeto||active.anio);
+    rsub.textContent = hasF? "Según los filtros aplicados" : "Mostrando una muestra del registro nacional";
+
+    var html="";
+    if(loading && rows.length===0){ for(var i=0;i<6;i++) html+='<div class="skel"></div>'; list.innerHTML=html; return; }
+    if(error){
+      list.innerHTML='<div class="state error"><div class="ico">'+
+        '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>'+
+        '</div><h3>La consulta no se pudo completar</h3>'+
+        '<p>El servidor respondió con un error ('+escHtml(error)+'). Prueba con menos filtros o repite en unos segundos.</p></div>';
+      return;
+    }
+    if(rows.length===0){
+      list.innerHTML='<div class="state"><div class="ico">'+
+        '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 7h16M4 12h10M4 17h7"/></svg>'+
+        '</div><h3>Sin coincidencias</h3>'+
+        '<p>Ningún proceso coincide con esos filtros. Prueba términos más generales o limpia alguno.</p></div>';
+      return;
+    }
+    for(var j=0;j<rows.length;j++) html+=cardHtml(rows[j]);
+    if(!done){ html+='<div class="loadmore"><button class="btn" id="loadmore"'+(more?' disabled':'')+'>'+
+      (more? '<span class="spin dark"></span>Cargando…' : 'Cargar más resultados')+'</button></div>'; }
+    list.innerHTML=html;
+    var lm=$("loadmore"); if(lm) lm.addEventListener("click", loadMore);
+  }
+
+  /* ===== acciones ===== */
+  function runQuery(a){
+    active=a; var id=++reqId;
+    loading=true; error=null; rows=[]; count=null; page=0; done=false;
+    setBtnLoading(true); render();
+    fetchPage(a,0,true).then(function(j){
+      if(id!==reqId) return;
+      rows=j.value||[];
+      if(j["@odata.count"]!=null) count=j["@odata.count"];
+      done=rows.length<PAGE;
+    }).catch(function(e){ if(id===reqId) error=(e&&e.message)||"Error de consulta"; })
+    .then(function(){ if(id===reqId){ loading=false; setBtnLoading(false); render(); } });
+  }
+  function loadMore(){
+    if(more||done) return;
+    var id=reqId, next=page+1; more=true; render();
+    fetchPage(active,next,false).then(function(j){
+      if(id!==reqId) return;
+      var v=j.value||[]; rows=rows.concat(v); page=next; done=v.length<PAGE;
+    }).catch(function(e){ if(id===reqId) error=(e&&e.message)||"Error"; })
+    .then(function(){ if(id===reqId){ more=false; render(); } });
+  }
+  function readForm(){
+    return {
+      nomEnt:$("f_nomEnt").value.trim(), entidad:$("f_entidad").value.trim(),
+      desc:$("f_desc").value.trim(), ref:$("f_ref").value.trim(), anio:$("f_anio").value,
+      nitProv:$("f_nitProv").value.trim(), nomProv:$("f_nomProv").value.trim(),
+      valorMin:$("f_valor").value.trim(), mod:$("f_mod").value.trim(), objeto:$("f_objeto").value.trim()
+    };
+  }
+  var INPUT_IDS=["f_nomEnt","f_entidad","f_desc","f_ref","f_anio","f_nitProv","f_nomProv","f_valor","f_mod","f_objeto"];
+
+  function showIdle(){
+    active=null; rows=[]; count=null; error=null; loading=false; done=false;
+    rcount.textContent="Realiza una búsqueda";
+    rsub.textContent="Usa los filtros y pulsa Buscar para consultar procesos";
+    list.innerHTML='<div class="state"><div class="ico">'+
+      '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>'+
+      '</div><h3>Comienza tu búsqueda</h3>'+
+      '<p>Ingresa uno o más filtros y pulsa <b>Buscar</b> para consultar los procesos del SECOP&nbsp;II.</p></div>';
+  }
+  function showBlocked(){
+    active=null; rows=[]; count=null; error=null; loading=false; done=true;
+    setBtnLoading(false);
+    rcount.textContent="Búsqueda no permitida";
+    rsub.textContent="Este proveedor está restringido";
+    list.innerHTML='<div class="state"><div class="ico">'+
+      '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>'+
+      '</div><h3>Proveedor restringido</h3>'+
+      '<p>No es posible consultar procesos por este documento de proveedor.</p></div>';
+  }
+  function isBlocked(a){ return a.nitProv && BLOCKED_DOCS.indexOf(a.nitProv)>=0; }
+
+  $("form").addEventListener("submit", function(e){ e.preventDefault(); if(!F) return;
+    var a=readForm(); if(isBlocked(a)){ showBlocked(); return; } runQuery(a); });
+  $("clear").addEventListener("click", function(){
+    INPUT_IDS.forEach(function(id){ $(id).value=""; });
+    if(F) showIdle();
+  });
+  $("btnXlsx").addEventListener("click", downloadExcel);
+
+  /* campos numéricos: solo dígitos (escritura y pegado) */
+  ["f_nitProv","f_valor"].forEach(function(id){
+    $(id).addEventListener("input", function(){
+      var clean=this.value.replace(/\D+/g,"");
+      if(this.value!==clean) this.value=clean;
+    });
+  });
+
+  /* ===== arranque ===== */
+  (function boot(){
+    fetch(API+"?$limit=1").then(function(r){ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); })
+    .then(function(j){
+      var sample=(j&&j[0])||{}; var keys=Object.keys(sample); F={};
+      for(var k in FIELD_CANDIDATES) F[k]=pick(keys,FIELD_CANDIDATES[k]);
+      setBtnLoading(false); setXlsBusy(false);
+      fetch(API+"?$select="+encodeURIComponent("count(1) as cnt")).then(function(x){ return x.ok?x.json():null; })
+        .then(function(d){ if(d && d[0] && d[0].cnt!=null) $("total").textContent=NUM.format(Number(d[0].cnt)); })
+        .catch(function(){});
+      showIdle();
+    })
+    .catch(function(e){
+      list.innerHTML='<div class="state error"><div class="ico">'+
+        '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>'+
+        '</div><h3>No fue posible conectar con el origen de datos</h3>'+
+        '<p>'+escHtml((e&&e.message)||"Error de red")+'. Para que el navegador permita la consulta a datos.gov.co, sirve la página por <b>https</b> (GitHub Pages ya lo hace).</p></div>';
+      rcount.textContent="Sin conexión";
+    });
+  })();
+})();
