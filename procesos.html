@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src https://www.datos.gov.co; img-src 'self' data:; object-src 'none'; base-uri 'self'" />
 <title>Procesos de Contratación · SECOP II</title>
 <meta name="description" content="Buscador de procesos de contratación del SECOP II sobre datos abiertos de Colombia." />
 
@@ -13,7 +14,7 @@
 <link rel="stylesheet" href="styles.css">
 
 <!-- xlsx-js-style: genera .xlsx con estilos en el navegador (reemplazo directo de SheetJS; si no carga, se usa CSV) -->
-<script defer src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js" integrity="sha384-OUW9euuUyxyHcAhTqbhI+Iyb8LMssXt/cpz0yXhs9UWG2/R/uaWdakx/4cfww7Vb" crossorigin="anonymous"></script>
 <!-- Lógica de la aplicación -->
 <script defer src="procesos.js"></script>
 </head>
@@ -115,7 +116,7 @@
     <span>Ordenado por: <b>Fecha · reciente</b></span>
     <button type="button" class="btn-xlsx" id="btnXlsx" disabled>
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
-      Descargar Excel
+      <span id="xlsLabel"> Descargar Excel</span>
     </button>
     <span class="xlsx-note">⚠ La descarga incluye máximo 5.000 registros.</span>
   </div>

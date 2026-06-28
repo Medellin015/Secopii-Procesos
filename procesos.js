@@ -53,9 +53,20 @@
     return d.toLocaleDateString("es-CO",{year:"numeric",month:"short",day:"2-digit"}); }
   function getYear(v){ if(!v) return null; var d=new Date(v); return isNaN(d)?null:d.getFullYear(); }
 
+  /* fetch con timeout: evita que una conexión colgada deje la UI en "Buscando…"
+     para siempre. Sin coste de rendimiento; solo aborta peticiones sin respuesta. */
+  var FETCH_TIMEOUT=15000;
+  function fetchT(url){
+    if(typeof AbortController==="undefined") return fetch(url);
+    var ac=new AbortController(), t=setTimeout(function(){ ac.abort(); }, FETCH_TIMEOUT);
+    return fetch(url,{signal:ac.signal}).then(
+      function(r){ clearTimeout(t); return r; },
+      function(e){ clearTimeout(t); throw e; });
+  }
+
   /* ===== estado ===== */
   var F=null, active=null, rows=[], count=null, page=0,
-      loading=false, more=false, done=false, error=null, reqId=0, xlsBusy=false;
+      loading=false, more=false, moreErr=false, done=false, error=null, reqId=0, xlsBusy=false;
   var $=function(id){ return document.getElementById(id); };
   var list=$("list"), rcount=$("rcount"), rsub=$("rsub");
 
@@ -75,7 +86,12 @@
     function txt(field, value){                 /* texto libre: contiene */
       if(!value || !field) return;
       var v=esc(opts.lower? value.toLowerCase() : value);
-      p.push(opts.lower? "lower("+field+") like '%"+v+"%'" : field+" like '%"+v+"%'");
+      var lhs=opts.lower? "lower("+field+")" : field;
+      if(opts.escW){                            /* trata %, _ y \ del usuario como literales */
+        p.push(lhs+" like '%"+v.replace(/[\\%_]/g,"\\$&")+"%' escape '\\'");
+      } else {                                  /* respaldo: si el servidor no soporta ESCAPE */
+        p.push(lhs+" like '%"+v+"%'");
+      }
     }
     function idTxt(field, value){                /* identificador de texto: exacto */
       if(!value || !field) return;
@@ -103,17 +119,28 @@
     return p.join(" and ");
   }
   /* orden: por fecha (más reciente primero) y los procesos sin fecha al final */
+  /* :id (columna de sistema de Socrata) como desempate => paginación estable:
+     evita filas duplicadas/omitidas entre páginas/lotes cuando hay empates de
+     fecha. Se dejan respaldos SIN :id por si el dataset no expone esa columna. */
   function orderCandidates(){
-    if(!(F && F.fecha)) return [""];
+    if(!(F && F.fecha)) return [":id", ""];
     var f=F.fecha;
-    return ["coalesce("+f+",'1111-01-01T00:00:00') desc", f+" desc"];
+    return ["coalesce("+f+",'1111-01-01T00:00:00') desc, :id", f+" desc, :id",
+            "coalesce("+f+",'1111-01-01T00:00:00') desc", f+" desc"];
   }
-  /* respaldo: alterna lower()/sin lower y orden con/sin coalesce ante un 400 */
-  var WHERE_OPTS=[{lower:true},{lower:false}];
+  /* Estrategias de respaldo ante un 400, en CASCADA (no producto cartesiano: así
+     el peor caso son pocas peticiones, no decenas). Se degrada por pasos —primero
+     quita ESCAPE, luego :id/coalesce, luego lower()— y la ÚLTIMA combinación
+     reproduce el comportamiento original, de modo que ningún fix puede romper la
+     búsqueda. En el camino feliz gana la 1ª (una sola petición, count en paralelo). */
   function buildStrategies(){
-    var s=[]; orderCandidates().forEach(function(ord){
-      WHERE_OPTS.forEach(function(opts){ s.push({ord:ord, opts:opts}); });
-    }); return s;
+    var ords=orderCandidates(), s=[];
+    s.push({ord:ords[0], opts:{lower:true, escW:true}});     /* orden + texto más ricos */
+    s.push({ord:ords[0], opts:{lower:true, escW:false}});    /* sin ESCAPE */
+    for(var i=1;i<ords.length;i++)                            /* degradar el orden */
+      s.push({ord:ords[i], opts:{lower:true, escW:false}});
+    s.push({ord:ords[ords.length-1], opts:{lower:false, escW:false}});  /* == original */
+    return s;
   }
   function tryStrategies(attempt){
     return buildStrategies().reduce(function(promise, st, i){
@@ -127,10 +154,10 @@
       var dataUrl=API+"?$limit="+PAGE+"&$offset="+off;
       if(w) dataUrl+="&$where="+encodeURIComponent(w);
       if(st.ord) dataUrl+="&$order="+encodeURIComponent(st.ord);
-      var pData=fetch(dataUrl).then(function(r){ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); });
+      var pData=fetchT(dataUrl).then(function(r){ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); });
       if(!withCount) return pData.then(function(arr){ return {value:arr}; });
       var cntUrl=API+"?$select="+encodeURIComponent("count(1) as cnt")+(w? "&$where="+encodeURIComponent(w):"");
-      var pCount=fetch(cntUrl).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; });
+      var pCount=fetchT(cntUrl).then(function(r){ return r.ok?r.json():null; }).catch(function(){ return null; });
       return Promise.all([pData,pCount]).then(function(res){
         var out={value:res[0]};
         if(res[1] && res[1][0] && res[1][0].cnt!=null) out["@odata.count"]=Number(res[1][0].cnt);
@@ -157,7 +184,7 @@
       var url=API+"?$limit="+limit+"&$offset="+offset;
       if(w) url+="&$where="+encodeURIComponent(w);
       if(st.ord) url+="&$order="+encodeURIComponent(st.ord);
-      return fetch(url).then(function(r){ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); });
+      return fetchT(url).then(function(r){ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); });
     }
     return tryStrategies(attempt);
   }
@@ -180,25 +207,29 @@
   }
   /* da formato al .xlsx: anchos de columna, encabezado con estilo, filtros y miles */
   function styleSheet(ws){
-    var range=XLSX.utils.decode_range(ws['!ref']), cols=[];
-    for(var c=range.s.c;c<=range.e.c;c++){
-      var max=10;
-      for(var r=range.s.r;r<=range.e.r;r++){
-        var cell=ws[XLSX.utils.encode_cell({c:c,r:r})];
-        if(cell&&cell.v!=null){ var len=String(cell.v).length; if(len>max) max=len; }
-      }
-      cols.push({wch:Math.min(max+2,60)});
-      var head=ws[XLSX.utils.encode_cell({c:c,r:0})];
+    var range=XLSX.utils.decode_range(ws['!ref']);
+    var c, r, cell, head, maxw=[], isValor=[];
+    /* encabezados y detección de columnas "Valor" (una vez por columna) */
+    for(c=range.s.c;c<=range.e.c;c++){
+      maxw[c]=10;
+      head=ws[XLSX.utils.encode_cell({c:c,r:0})];
+      isValor[c]= !!(head && /^Valor/i.test(String(head.v)));
       if(head){
         head.s={ font:{bold:true,color:{rgb:"FFFFFF"}}, fill:{fgColor:{rgb:"0A1A2F"}},
           alignment:{horizontal:"center",vertical:"center",wrapText:true},
           border:{bottom:{style:"medium",color:{rgb:"B98A28"}}} };
-        if(/^Valor/i.test(String(head.v))){
-          for(var rr=1;rr<=range.e.r;rr++){ var cc=ws[XLSX.utils.encode_cell({c:c,r:rr})];
-            if(cc&&typeof cc.v==="number") cc.z="#,##0"; }
-        }
       }
     }
+    /* un solo recorrido de celdas: ancho de columna + formato de miles */
+    for(r=range.s.r;r<=range.e.r;r++){
+      for(c=range.s.c;c<=range.e.c;c++){
+        cell=ws[XLSX.utils.encode_cell({c:c,r:r})];
+        if(!cell||cell.v==null) continue;
+        var len=String(cell.v).length; if(len>maxw[c]) maxw[c]=len;
+        if(r>0 && isValor[c] && typeof cell.v==="number") cell.z="#,##0";
+      }
+    }
+    var cols=[]; for(c=range.s.c;c<=range.e.c;c++) cols.push({wch:Math.min(maxw[c]+2,60)});
     ws['!cols']=cols;
     ws['!autofilter']={ref:ws['!ref']};
   }
@@ -219,7 +250,7 @@
   function setXlsBusy(on){
     var b=$("btnXlsx"); if(!b) return;
     b.disabled = on || !F;
-    b.lastChild.textContent = on? " Generando…" : " Descargar Excel";
+    var lbl=$("xlsLabel"); if(lbl) lbl.textContent = on? " Generando…" : " Descargar Excel";
   }
   function downloadExcel(){
     if(!F || xlsBusy) return;
@@ -330,16 +361,33 @@
       return;
     }
     for(var j=0;j<rows.length;j++) html+=cardHtml(rows[j]);
-    if(!done){ html+='<div class="loadmore"><button class="btn" id="loadmore"'+(more?' disabled':'')+'>'+
-      (more? '<span class="spin dark"></span>Cargando…' : 'Cargar más resultados')+'</button></div>'; }
+    if(!done) html+=loadMoreHtml();
     list.innerHTML=html;
-    var lm=$("loadmore"); if(lm) lm.addEventListener("click", loadMore);
+    bindLoadMore();
+  }
+  function loadMoreHtml(){
+    return '<div class="loadmore"><button class="btn" id="loadmore"'+(more?' disabled':'')+'>'+
+      (more? '<span class="spin dark"></span>Cargando…'
+           : (moreErr? 'Error al cargar · Reintentar' : 'Cargar más resultados'))+'</button></div>';
+  }
+  function bindLoadMore(){ var lm=$("loadmore"); if(lm) lm.addEventListener("click", loadMore); }
+  /* repinta solo el botón "Cargar más" sin reconstruir las tarjetas ya visibles */
+  function syncMore(){
+    var wrap=list.querySelector(".loadmore"); if(wrap) wrap.parentNode.removeChild(wrap);
+    if(!done){ list.insertAdjacentHTML("beforeend", loadMoreHtml()); bindLoadMore(); }
+  }
+  /* anexa solo las tarjetas nuevas (evita el re-render O(n) en cada página) */
+  function appendCards(newRows){
+    var h=""; for(var j=0;j<newRows.length;j++) h+=cardHtml(newRows[j]);
+    var wrap=list.querySelector(".loadmore");
+    if(wrap) wrap.insertAdjacentHTML("beforebegin", h);
+    else list.insertAdjacentHTML("beforeend", h);
   }
 
   /* ===== acciones ===== */
   function runQuery(a){
     active=a; var id=++reqId;
-    loading=true; error=null; rows=[]; count=null; page=0; done=false;
+    loading=true; error=null; rows=[]; count=null; page=0; done=false; more=false; moreErr=false;
     setBtnLoading(true); render();
     fetchPage(a,0,true).then(function(j){
       if(id!==reqId) return;
@@ -351,12 +399,13 @@
   }
   function loadMore(){
     if(more||done) return;
-    var id=reqId, next=page+1; more=true; render();
+    var id=reqId, next=page+1; more=true; moreErr=false; syncMore();
     fetchPage(active,next,false).then(function(j){
       if(id!==reqId) return;
       var v=j.value||[]; rows=rows.concat(v); page=next; done=v.length<PAGE;
-    }).catch(function(e){ if(id===reqId) error=(e&&e.message)||"Error"; })
-    .then(function(){ if(id===reqId){ more=false; render(); } });
+      appendCards(v);   /* conserva las tarjetas ya cargadas; solo añade las nuevas */
+    }).catch(function(e){ if(id===reqId) moreErr=true; })   /* error de página: no borra lo ya mostrado */
+    .then(function(){ if(id===reqId){ more=false; syncMore(); } });
   }
   function readForm(){
     return {
@@ -407,12 +456,26 @@
 
   /* ===== arranque ===== */
   (function boot(){
-    fetch(API+"?$limit=1").then(function(r){ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); })
+    /* Socrata omite del JSON los campos nulos de cada fila, así que mapear el
+       esquema sobre UNA sola fila puede dejar campos sin resolver. Se unen las
+       claves de varias filas para detectar el esquema de forma fiable. El coste
+       es una única petición de arranque algo mayor, no afecta a las búsquedas. */
+    fetchT(API+"?$limit=25").then(function(r){ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); })
     .then(function(j){
-      var sample=(j&&j[0])||{}; var keys=Object.keys(sample); F={};
+      var arr=(j&&j.length)?j:[], keySet={};
+      arr.forEach(function(row){ if(row&&typeof row==="object") for(var kk in row) keySet[kk]=1; });
+      var keys=Object.keys(keySet);
+      if(!keys.length){   /* dataset vacío/no disponible: no habilitar búsquedas que ignorarían los filtros */
+        list.innerHTML='<div class="state error"><div class="ico">'+
+          '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>'+
+          '</div><h3>El conjunto de datos no está disponible</h3>'+
+          '<p>El origen respondió sin registros. Inténtalo de nuevo en unos minutos.</p></div>';
+        rcount.textContent="Sin datos"; return;
+      }
+      F={};
       for(var k in FIELD_CANDIDATES) F[k]=pick(keys,FIELD_CANDIDATES[k]);
       setBtnLoading(false); setXlsBusy(false);
-      fetch(API+"?$select="+encodeURIComponent("count(1) as cnt")).then(function(x){ return x.ok?x.json():null; })
+      fetchT(API+"?$select="+encodeURIComponent("count(1) as cnt")).then(function(x){ return x.ok?x.json():null; })
         .then(function(d){ if(d && d[0] && d[0].cnt!=null) $("total").textContent=NUM.format(Number(d[0].cnt)); })
         .catch(function(){});
       showIdle();
