@@ -125,7 +125,14 @@
     if(a.anio && F.fecha){ var yy=parseInt(a.anio,10);
       p.push(F.fecha+" >= '"+yy+"-01-01T00:00:00' and "+F.fecha+" < '"+(yy+1)+"-01-01T00:00:00'"); }
     if(a.recent && a.recentSince && F.fecha){   /* vista por defecto: último mes */
-      p.push(F.fecha+" >= '"+esc(a.recentSince)+"'"); }
+      p.push(F.fecha+" >= '"+esc(a.recentSince)+"'");
+      if(F.modalidad){                          /* sin contratación directa */
+        /* en el respaldo sin lower(), '%irecta%' cubre "Directa" y "directa" */
+        p.push("not ("+(opts.lower
+          ? "lower("+F.modalidad+") like '%directa%'"
+          : F.modalidad+" like '%irecta%'")+")");
+      }
+    }
     if(F.nitProv){                               /* excluir proveedores restringidos */
       BLOCKED_DOCS.forEach(function(doc){ p.push(F.nitProv+" != '"+esc(doc)+"'"); });
     }
@@ -363,7 +370,7 @@
     }
     else { rcount.textContent=rows.length+" resultado"+(rows.length===1?'':'s'); }
     var hasF = active && (active.nitEnt||active.nomEnt||active.desc||active.ref||active.nitProv||active.nomProv||active.valorMin||active.mod||active.objeto||active.anio);
-    rsub.textContent = isRecent? "Las más recientes primero · desde "+(fmtFecha(active.recentSince)||"hace un mes")
+    rsub.textContent = isRecent? "Sin contratación directa · las más recientes primero · desde "+(fmtFecha(active.recentSince)||"hace un mes")
       : (hasF? "Según los filtros aplicados" : "Mostrando una muestra del registro nacional");
 
     var html="";
