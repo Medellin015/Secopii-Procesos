@@ -5,7 +5,7 @@
      Dataset: SECOP II - Procesos de Contratación (p6dx-8zbt).
      (El dataset 77td-mmia está vacío, por eso no se usa.) */
   var API = "https://www.datos.gov.co/resource/p6dx-8zbt.json";
-  var PAGE = 20;
+  var PAGE = 50;
 
   /* documentos de proveedor restringidos (igual que en Contratos) */
   var BLOCKED_DOCS = ["1128272022"];
@@ -115,10 +115,10 @@
       if(!value || !field) return;
       p.push(field+" = '"+esc(String(value).trim())+"'");
     }
-    function gte(field, value){                  /* numérico: valor mínimo */
+    function num(field, value, op){              /* numérico: cota del rango */
       if(!value || !field) return;
       var raw=String(value).trim();
-      if(/^[0-9]+$/.test(raw)) p.push(field+" >= "+raw);
+      if(/^[0-9]+$/.test(raw)) p.push(field+" "+op+" "+raw);
     }
     idTxt(F.nitEnt,    a.nitEnt);
     txt(F.nomEnt,      a.nomEnt);
@@ -126,8 +126,10 @@
     txt(F.referencia,  a.ref);
     idTxt(F.nitProv,   a.nitProv);
     txt(F.nomProv,     a.nomProv);
-    gte(F.valor,       a.valorMin);
+    num(F.valor,       a.valorMin, ">=");
+    num(F.valor,       a.valorMax, "<=");
     txt(F.modalidad,   a.mod);
+    txt(F.estado,      a.estado);
     txt(F.objeto,      a.objeto);
     if(a.anio && F.fecha){ var yy=parseInt(a.anio,10);
       p.push(F.fecha+" >= '"+yy+"-01-01T00:00:00' and "+F.fecha+" < '"+(yy+1)+"-01-01T00:00:00'"); }
@@ -366,7 +368,7 @@
         : '<span>'+NUM.format(count)+'</span> proceso'+(count===1?'':'s')+' encontrado'+(count===1?'':'s');
     }
     else { rcount.textContent=rows.length+" resultado"+(rows.length===1?'':'s'); }
-    var hasF = active && (active.nitEnt||active.nomEnt||active.desc||active.ref||active.nitProv||active.nomProv||active.valorMin||active.mod||active.objeto||active.anio);
+    var hasF = !!(active && hasFilters(active));
     rsub.textContent = isRecent? "Sin contratación directa · las más recientes primero · desde "+(fmtFecha(active.recentSince)||"hace un mes")
       : (hasF? "Según los filtros aplicados · sin contratación directa" : "Muestra del registro nacional · sin contratación directa");
 
@@ -437,14 +439,18 @@
     .then(function(){ if(id===reqId){ more=false; syncMore(); } });
   }
   function readForm(){
+    var vMin=$("f_valMin").value.trim(), vMax=$("f_valMax").value.trim();
+    /* si el rango viene invertido, se corrige en silencio */
+    if(vMin && vMax && Number(vMin)>Number(vMax)){ var t=vMin; vMin=vMax; vMax=t; }
     return {
       nitEnt:$("f_nitEnt").value.trim(), nomEnt:$("f_nomEnt").value.trim(),
       desc:$("f_desc").value.trim(), ref:$("f_ref").value.trim(), anio:$("f_anio").value,
       nitProv:$("f_nitProv").value.trim(), nomProv:$("f_nomProv").value.trim(),
-      valorMin:$("f_valor").value.trim(), mod:$("f_mod").value.trim(), objeto:$("f_objeto").value.trim()
+      valorMin:vMin, valorMax:vMax, mod:$("f_mod").value.trim(),
+      estado:$("f_estado").value.trim(), objeto:$("f_objeto").value.trim()
     };
   }
-  var INPUT_IDS=["f_nomEnt","f_nitEnt","f_desc","f_ref","f_anio","f_nitProv","f_nomProv","f_valor","f_mod","f_objeto"];
+  var INPUT_IDS=["f_nomEnt","f_nitEnt","f_desc","f_ref","f_anio","f_nitProv","f_nomProv","f_valMin","f_valMax","f_mod","f_estado","f_objeto"];
 
   /* vista por defecto: últimas licitaciones publicadas (último mes) */
   function showRecent(){ runQuery(recentQuery()); }
@@ -462,7 +468,8 @@
   function isBlocked(a){ return a.nitProv && BLOCKED_DOCS.indexOf(a.nitProv)>=0; }
 
   function hasFilters(a){
-    return !!(a.nitEnt||a.nomEnt||a.desc||a.ref||a.nitProv||a.nomProv||a.valorMin||a.mod||a.objeto||a.anio);
+    return !!(a.nitEnt||a.nomEnt||a.desc||a.ref||a.nitProv||a.nomProv||
+      a.valorMin||a.valorMax||a.mod||a.estado||a.objeto||a.anio);
   }
   $("form").addEventListener("submit", function(e){ e.preventDefault(); if(!F) return;
     var a=readForm(); if(isBlocked(a)){ showBlocked(); return; }
@@ -475,7 +482,7 @@
   $("btnXlsx").addEventListener("click", downloadExcel);
 
   /* campos numéricos: solo dígitos (escritura y pegado) */
-  ["f_nitEnt","f_nitProv","f_valor"].forEach(function(id){
+  ["f_nitEnt","f_nitProv","f_valMin","f_valMax"].forEach(function(id){
     $(id).addEventListener("input", function(){
       var clean=this.value.replace(/\D+/g,"");
       if(this.value!==clean) this.value=clean;

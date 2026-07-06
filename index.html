@@ -75,6 +75,10 @@
         <div class="ctrl"><input id="f_ref" type="text" placeholder="Todas" autocomplete="off"/></div>
       </div>
       <div class="fld">
+        <label for="f_objeto">Objeto</label>
+        <div class="ctrl"><input id="f_objeto" type="text" placeholder="Todas" autocomplete="off"/></div>
+      </div>
+      <div class="fld">
         <label for="f_anio">Año</label>
         <div class="ctrl"><select id="f_anio"><option value="">Todas</option></select></div>
       </div>
@@ -89,10 +93,6 @@
         <div class="ctrl"><input id="f_nomProv" type="text" placeholder="Todas" autocomplete="off"/></div>
       </div>
       <div class="fld">
-        <label for="f_valor">Valor Total Adjudicado (mínimo)</label>
-        <div class="ctrl"><input id="f_valor" type="text" inputmode="numeric" placeholder="Todas" autocomplete="off"/></div>
-      </div>
-      <div class="fld">
         <label for="f_mod">Modalidad de Contratación</label>
         <div class="ctrl"><select id="f_mod">
           <option value="">Todas (sin contratación directa)</option>
@@ -105,8 +105,26 @@
         </select></div>
       </div>
       <div class="fld">
-        <label for="f_objeto">Objeto</label>
-        <div class="ctrl"><input id="f_objeto" type="text" placeholder="Todas" autocomplete="off"/></div>
+        <label for="f_estado">Estado del proceso</label>
+        <div class="ctrl"><select id="f_estado">
+          <option value="">Todos</option>
+          <option value="publicado">Publicado</option>
+          <option value="convocado">Convocado</option>
+          <option value="evaluación">En evaluación</option>
+          <option value="adjudicado">Adjudicado</option>
+          <option value="suspendido">Suspendido</option>
+          <option value="cancelado">Cancelado</option>
+          <option value="borrador">Borrador</option>
+          <option value="terminado">Terminado</option>
+        </select></div>
+      </div>
+      <div class="fld">
+        <label for="f_valMin">Valor Adjudicado desde ($)</label>
+        <div class="ctrl"><input id="f_valMin" type="text" inputmode="numeric" placeholder="Sin mínimo" autocomplete="off"/></div>
+      </div>
+      <div class="fld">
+        <label for="f_valMax">Valor Adjudicado hasta ($)</label>
+        <div class="ctrl"><input id="f_valMax" type="text" inputmode="numeric" placeholder="Sin máximo" autocomplete="off"/></div>
       </div>
     </div>
 
